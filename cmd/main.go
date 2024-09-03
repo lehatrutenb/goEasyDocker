@@ -41,14 +41,16 @@ func (wp *goWorkspaceParser) initWorkFile() error {
     return nil
 }
 
-func (wp *goWorkspaceParser) parseModFile(module *modfile.Use) (*modfile.File, []byte, error) {
+// add struct later to params
+func (wp *goWorkspaceParser) parseModFile(module *modfile.Use, path string) (*modfile.File, []byte, error) {
     if module == nil {
         wp.lg.Warn("got nil module")
         return nil, nil, nil
     }
-    fBData, err := os.ReadFile(wp.addr + "/" + module.Path + "/go.mod")
+    wp.lg.Debug("Trying to parse .mod file", zap.String("complete path", path))
+    fBData, err := os.ReadFile(path)
     if err != nil {
-        wp.lg.Error("failed to read modfile", zap.Error(err), zap.String("path", module.Path))
+        wp.lg.Error("failed to read modfile", zap.Error(err), zap.String("path", path))
         return nil, nil, err
     }
     
@@ -70,7 +72,7 @@ func (wp *goWorkspaceParser) initModFiles() error {
         if module == nil {
             continue
         }
-        mf, bData, err := wp.parseModFile(module)
+        mf, bData, err := wp.parseModFile(module, wp.addr + "/" + module.Path + "/go.mod")
         if err != nil {
             return err
         }
@@ -126,7 +128,7 @@ func (mm *goModMerger) addReqs(mf *modfile.File) (map[string]string, error) {
             continue
         }
 
-        escPath, err := module.EscapePath(req.Mod.Path)
+        /*escPath, err := module.EscapePath(req.Mod.Path)
         if err != nil {
             mm.lg.Error("failed to escape req path")
             return nil, err
@@ -135,11 +137,12 @@ func (mm *goModMerger) addReqs(mf *modfile.File) (map[string]string, error) {
         if err != nil {
             mm.lg.Error("failed to escape req version")
             return nil, err
-        }
+        }*/
         /*if curVersion, ok := mm.curReqs[escPath]; ok && curVersion != escVersion {
             mm.lg.Warn("find different versions of module", zap.String("first version", curVersion), zap.String("second version", escVersion), zap.String("module", mf.Module.Mod.Path))
         }*/
-        reqs[escPath] = escVersion
+        // am I really need escaped version - as also I will have to do unascape after it
+        reqs[req.Mod.Path] = req.Mod.Version
     }
     return reqs, nil
 }
@@ -179,14 +182,17 @@ func (mm *goModMerger) loadPrev() error {
         }
     }
 
-    for _, module := range(modules) {
-        mf, bData, err := mm.wp.parseModFile(&modfile.Use{Path: mm.oModPath + module.Name()})
+    for _, curModule := range(modules) {
+        tmpMf := modfile.Use{Path: mm.oModPath + curModule.Name()}
+        mf, bData, err := mm.wp.parseModFile(&tmpMf, tmpMf.Path)
         if err != nil {
             return err
         }
         if mf == nil {
             continue
         }
+        mf.Module = &modfile.Module{Mod: module.Version{}}
+        mf.Module.Mod.Path = tmpMf.Path
         mm.curMfs = append(mm.curMfs, mf)
         mm.curMfsBData = append(mm.curMfsBData, bData)
     }
@@ -218,9 +224,11 @@ func (mm *goModMerger) addNewModFile() error {
     if err != nil {
         return err
     }
-    newMf := mm.wp.mfs[0] // questionable solution not to init new modfile by myself
-    //newMf.Module.Mod.Path = "go" + strconv.Itoa(len(mm.curMfs)) + ".mod" // update module name to just filename
-    newMf.Syntax.Name = "go" + strconv.Itoa(len(mm.curMfs)) + ".mod"
+    //newMf := mm.wp.mfs[0] // questionable solution not to init new modfile by myself
+    var newMf *modfile.File = &modfile.File{Syntax: &modfile.FileSyntax{}}
+    newMf.Syntax.Name = "go" + strconv.Itoa(len(mm.curMfs)) + ".mod" // !!! check it I dont think its ok
+    newMf.Module = &modfile.Module{Mod: module.Version{}}
+    newMf.Module.Mod.Path = "go" + strconv.Itoa(len(mm.curMfs)) + ".mod" // update module name to just filename
     for path, version := range(reqs) {
         if curVersion, ok := mm.curReqs[path]; ok || curVersion == version {
             continue
@@ -230,8 +238,12 @@ func (mm *goModMerger) addNewModFile() error {
 
     bData, err := newMf.Format()
     if err != nil {
-        mm.lg.Error("failed to fromat new modfile", zap.Error(err))
+        mm.lg.Error("failed to format new modfile", zap.Error(err))
         return err
+    }
+    if len(bData) == 0 { // modfile is empty <=> nop new reqs 
+        mm.lg.Info("no new reqs added")
+        return nil
     }
     if err = os.WriteFile(mm.oModPath + newMf.Syntax.Name, bData, os.ModePerm); err != nil {
         mm.lg.Error("failed to write new modfile", zap.Error(err))
@@ -263,6 +275,7 @@ func (iw *goImageWorker) generateDockerfile() []byte {
     for _, mf := range(iw.mm.curMfs) { // download all modfiles one by one
         sData += fmt.Sprintf("COPY %v go.mod\n RUN go mod download\n", mf.Module.Mod.Path) // add path as in curMfs path is just a file's name
     }
+    iw.lg.Debug("dockefile data", zap.String("text", sData))
     return []byte(sData)
 }
 
@@ -289,7 +302,7 @@ func (iw *goImageWorker) generateImageBuilderBody() *bytes.Buffer {
 // care, buildModsImage wants to create .goEasyDockerDockerfile and than rm it
 func (iw *goImageWorker) buildModsImage(imageName string) (types.ImageBuildResponse, error) {
     /* #so i'm happy now#
-    if err := os.WriteFile(".goEasyDockerDockerfile", iw.generateDockerfile(), os.ModePerm); err != nil { // i really will be happy to to create such files
+    if err := os.WriteFile(".goEasyDockerDockerfile", iw.generateDockerfile(), os.ModePerm); err != nil { // i really will be happy not to create such files
         iw.mm.lg.Error("failed to write dockerfile", zap.Error(err))
         return err
     }*/
@@ -308,7 +321,7 @@ func (iw *goImageWorker) buildModsImage(imageName string) (types.ImageBuildRespo
 
 func main() {
     lg, _ := zap.NewDevelopment()
-    goWorkAddr := "./test"
+    goWorkAddr := "./test_url_shorterer"
     goWorkParser, err := goWorkspaceParser{}.New(goWorkAddr, lg)
     if err != nil {
         lg.Fatal("", zap.Error(err))
@@ -326,5 +339,5 @@ func main() {
     if err != nil {
         lg.Fatal("", zap.Error(err))
     }
-    fmt.Println(goImgWorker.buildModsImage("testimage"))
+    fmt.Println(goImgWorker.buildModsImage("testimage2"))
 }
