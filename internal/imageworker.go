@@ -6,6 +6,7 @@ import (
     "context"
     "go.uber.org/zap"
     "github.com/docker/docker/client"
+    "github.com/docker/docker/api/types/image"
     "bytes"
     "strings"
     "github.com/docker/docker/api/types"
@@ -22,8 +23,8 @@ type GoImageWorker struct {
     ctx context.Context
 }
 
-func (_ GoImageWorker) New(mm *GoModMerger, lg *zap.Logger, ctx context.Context) (*GoImageWorker, error) {
-    cli, err := client.NewClientWithOpts(client.WithAPIVersionNegotiation())
+func (_ GoImageWorker) New(mm *GoModMerger, lg *zap.Logger, ctx context.Context, clOpts ...client.Opt) (*GoImageWorker, error) {
+    cli, err := client.NewClientWithOpts(clOpts...)
 	if err != nil {
         lg.Error("failed to init docker client", zap.Error(err))
 		return nil, err
@@ -117,8 +118,19 @@ func (iw *GoImageWorker) ReadImageBuildResponse(resp types.ImageBuildResponse) (
 func (iw *GoImageWorker) TagModsImage(name string, repo string, tag string) (error) {
     err := iw.cli.ImageTag(iw.ctx, name, repo+":"+tag)
     if err != nil {
-        iw.mm.lg.Error("failed to tag an image", zap.String("image name", name), zap.String("new repo", repo), zap.String("new tag", tag))
+        iw.mm.lg.Error("failed to tag an image", zap.Error(err), zap.String("image name", name), zap.String("new repo", repo), zap.String("new tag", tag))
         return err
     }
     return nil
+}
+
+// TODO add repo tag too (if we want some versioning)
+// to rm prevs images
+func (iw *GoImageWorker) RemoveModsImage(name string) (error) { // img name or id
+    _, err := iw.cli.ImageRemove(iw.ctx, name, image.RemoveOptions{}) // TODO work with remove response
+    if err != nil {
+        iw.mm.lg.Error("failed to remove an image", zap.Error(err), zap.String("image name", name))
+        return err
+    }
+    return nil   
 }

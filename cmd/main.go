@@ -6,6 +6,7 @@ import (
 	"goEasyDocker/internal"
     "flag"
     "log"
+    "github.com/docker/docker/client"
     "github.com/docker/docker/api/types"
 )
 
@@ -26,8 +27,8 @@ func createBaseImage(goWorkAddr string, oModAddr string, oImageRepo string, oIma
 	if err != nil {
 		lg.Fatal("failed to create new modfile", zap.Error(err))
 	}
-	
-    goImgWorker, err := tools.GoImageWorker{}.New(goMerger, lg, context.Background())
+    
+    goImgWorker, err := tools.GoImageWorker{}.New(goMerger, lg, context.Background(), client.WithAPIVersionNegotiation(), client.WithHostFromEnv())
 	if err != nil {
 		lg.Fatal("failed to init imageworker", zap.Error(err))
 	}
@@ -42,7 +43,7 @@ func createBaseImage(goWorkAddr string, oModAddr string, oImageRepo string, oIma
         lg.Fatal("failed to parse build response", zap.Error(err))
     }
     lg.Info("Successfully created base image", zap.String("id", imageId), zap.String("repository", oImageRepo), zap.String("tag",  oImageTag))
-    
+
     err = goImgWorker.TagModsImage(imageId, oImageRepo, oImageTag)
     if err != nil { 
         lg.Fatal("failed to tag image", zap.Error(err))
